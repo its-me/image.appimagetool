@@ -34,3 +34,7 @@ docker run --rm \
 | `1.9.1`, `1.9.0`, … | Pinned to a specific upstream release |
 
 Releases are tracked automatically from [AppImage/appimagetool](https://github.com/AppImage/appimagetool) and new images are built within 24 hours of an upstream release.
+
+## License
+
+[MIT](LICENSE)
