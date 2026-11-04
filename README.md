@@ -32,8 +32,11 @@ docker run --rm \
 |---|---|
 | `latest` | Latest stable release |
 | `1.9.1`, `1.9.0`, … | Pinned to a specific upstream release |
+| `continuous` | Latest upstream [continuous build](https://github.com/AppImage/appimagetool/releases/tag/continuous) |
+| `4919cc4`, … | Continuous build of a specific upstream commit |
+| `261101`, … | Continuous build published on a given date (`YYMMDD`, UTC; the day's last build) |
 
-Releases are tracked automatically from [AppImage/appimagetool](https://github.com/AppImage/appimagetool) and new images are built within 24 hours of an upstream release.
+Releases and continuous builds are tracked automatically from [AppImage/appimagetool](https://github.com/AppImage/appimagetool) and new images are built within 24 hours of an upstream change.
 
 ## License
 

@@ -12,6 +12,7 @@ jobs:
     permissions:
       contents: write
       actions: write
+      packages: read
     steps:
       - uses: actions/checkout@v7
         with:
@@ -29,4 +30,37 @@ jobs:
             git tag -a "$latest" -m "$latest"
             git push origin "$latest"
             gh workflow run release.yaml -f version="$latest"
+          fi
+
+      - name: Check continuous build
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_ACTOR: ${{ github.actor }}
+        run: |
+          release=$(gh api repos/AppImage/appimagetool/releases/tags/continuous)
+          sha=$(jq -r .target_commitish <<<"$release")
+          count=$(jq '[.assets[]
+            | select(.name | test("^appimagetool-(x86_64|aarch64|armhf|i686)\\.AppImage$"))
+            | select(.digest != null)] | length' <<<"$release")
+          if [ "$count" -ne 4 ]; then
+            echo "continuous release at $sha is incomplete ($count/4 assets); retrying next run"
+            exit 0
+          fi
+
+          token=$(curl -fsSL -u "$GH_ACTOR:$GH_TOKEN" \
+            "https://ghcr.io/token?scope=repository:its-me/appimagetool:pull" | jq -r .token)
+          manifest="$RUNNER_TEMP/continuous.json"
+          code=$(curl -sS -o "$manifest" -w '%{http_code}' \
+            -H "Authorization: Bearer $token" \
+            -H "Accept: application/vnd.oci.image.index.v1+json" \
+            https://ghcr.io/v2/its-me/appimagetool/manifests/continuous)
+          case "$code" in
+            200) published=$(jq -r '.annotations["org.opencontainers.image.revision"] // empty' "$manifest") ;;
+            404) published="" ;;
+            *) echo "::error::GHCR manifest lookup failed with HTTP $code"; exit 1 ;;
+          esac
+
+          if [ "$published" != "$sha" ]; then
+            echo "continuous: published ${published:-none}, upstream $sha; dispatching build"
+            gh workflow run release.yaml -f version=continuous -f revision="$sha"
           fi

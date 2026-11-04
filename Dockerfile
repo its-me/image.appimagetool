@@ -1,6 +1,7 @@
 FROM alpine:latest
 
 ARG APPIMAGETOOL_VERSION=continuous
+ARG APPIMAGETOOL_SHA256
 
 RUN set -o xtrace \
     && apk update \
@@ -17,4 +18,7 @@ RUN set -o xtrace \
         *) echo "Unsupported architecture: $ARCH" && exit 1 ;; \
     esac \
     && wget -O /usr/local/bin/appimagetool "https://github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-${APPIMAGETOOL_ARCH}.AppImage" \
+    && if [ -n "$APPIMAGETOOL_SHA256" ]; then \
+        echo "${APPIMAGETOOL_SHA256}  /usr/local/bin/appimagetool" | sha256sum -c - ; \
+    fi \
     && chmod +x /usr/local/bin/appimagetool

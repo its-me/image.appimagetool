@@ -7,8 +7,15 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'appimagetool version number'
+        description: 'appimagetool version number, or "continuous"'
         required: true
+      revision:
+        description: 'Upstream commit the continuous build must match (continuous only)'
+        required: false
+
+concurrency:
+  group: release-${{ inputs.version || github.ref_name }}
+  cancel-in-progress: false
 
 env:
   REPOSITORY: appimagetool
@@ -22,24 +29,56 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.value }}
       is_latest: ${{ steps.version.outputs.is_latest }}
+      revision: ${{ steps.version.outputs.revision }}
+      date: ${{ steps.version.outputs.date }}
+      digests: ${{ steps.version.outputs.digests }}
     steps:
       - name: Resolve version
         id: version
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           INPUT_VERSION: ${{ inputs.version }}
+          INPUT_REVISION: ${{ inputs.revision }}
         run: |
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             version="$GITHUB_REF_NAME"
           else
             version="$INPUT_VERSION"
           fi
-          highest=$(gh api "repos/${{ github.repository }}/tags" --paginate --jq '.[].name | select(test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))' | sort -V | tail -1)
-          if [ -z "$highest" ] || [ "$(printf '%s\n%s\n' "$highest" "$version" | sort -V | tail -1)" = "$version" ]; then
-            echo "is_latest=true" >> $GITHUB_OUTPUT
-          else
+          release=$(gh api "repos/AppImage/appimagetool/releases/tags/$version")
+          if [ "$version" = "continuous" ]; then
+            if [ -z "$INPUT_REVISION" ]; then
+              echo "::error::revision input is required for continuous builds"
+              exit 1
+            fi
+            if [ "$(jq -r .target_commitish <<<"$release")" != "$INPUT_REVISION" ]; then
+              echo "::error::continuous moved past $INPUT_REVISION since dispatch; the next check will pick up the new build"
+              exit 1
+            fi
             echo "is_latest=false" >> $GITHUB_OUTPUT
+            echo "revision=$INPUT_REVISION" >> $GITHUB_OUTPUT
+            echo "date=$(date -u -d "$(jq -r .published_at <<<"$release")" +%y%m%d)" >> $GITHUB_OUTPUT
+          else
+            highest=$(gh api "repos/${{ github.repository }}/tags" --paginate --jq '.[].name | select(test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))' | sort -V | tail -1)
+            if [ -z "$highest" ] || [ "$(printf '%s\n%s\n' "$highest" "$version" | sort -V | tail -1)" = "$version" ]; then
+              echo "is_latest=true" >> $GITHUB_OUTPUT
+            else
+              echo "is_latest=false" >> $GITHUB_OUTPUT
+            fi
           fi
+          digests=$(jq -c '[.assets[]
+            | select(.name | test("^appimagetool-(x86_64|aarch64|armhf|i686)\\.AppImage$"))
+            | select(.digest != null)
+            | {key: (.name | capture("^appimagetool-(?<arch>.+)\\.AppImage$").arch), value: (.digest | sub("^sha256:"; ""))}]
+            | from_entries' <<<"$release")
+          count=$(jq length <<<"$digests")
+          if [ "$count" -eq 0 ] && [ "$version" != "continuous" ]; then
+            echo "::warning::$version publishes no asset digests; building without checksum verification"
+          elif [ "$count" -ne 4 ]; then
+            echo "::error::expected 4 assets with digests in $version, got: $digests"
+            exit 1
+          fi
+          echo "digests=$digests" >> $GITHUB_OUTPUT
           echo "value=$version" >> $GITHUB_OUTPUT
 
   build:
@@ -53,10 +92,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { platform: linux/amd64,  runner: ubuntu-latest,    qemu: false }
-          - { platform: linux/arm64,  runner: ubuntu-24.04-arm, qemu: false }
-          - { platform: linux/arm/v7, runner: ubuntu-latest,    qemu: true  }
-          - { platform: linux/386,    runner: ubuntu-latest,    qemu: true  }
+          - { platform: linux/amd64,  runner: ubuntu-latest,    qemu: false, asset: x86_64  }
+          - { platform: linux/arm64,  runner: ubuntu-24.04-arm, qemu: false, asset: aarch64 }
+          - { platform: linux/arm/v7, runner: ubuntu-latest,    qemu: true,  asset: armhf   }
+          - { platform: linux/386,    runner: ubuntu-latest,    qemu: true,  asset: i686    }
     steps:
       - uses: actions/checkout@v7
 
@@ -85,7 +124,9 @@ jobs:
         with:
           context: .
           platforms: ${{ matrix.platform }}
-          build-args: APPIMAGETOOL_VERSION=${{ needs.resolve-version.outputs.version }}
+          build-args: |
+            APPIMAGETOOL_VERSION=${{ needs.resolve-version.outputs.version }}
+            APPIMAGETOOL_SHA256=${{ fromJSON(needs.resolve-version.outputs.digests)[matrix.asset] }}
           outputs: type=image,name=ghcr.io/its-me/${{ env.REPOSITORY }},push-by-digest=true,name-canonical=true,push=true
 
       - name: Export digest
@@ -134,19 +175,33 @@ jobs:
         env:
           VERSION: ${{ needs.resolve-version.outputs.version }}
           IS_LATEST: ${{ needs.resolve-version.outputs.is_latest }}
+          REVISION: ${{ needs.resolve-version.outputs.revision }}
+          DATE: ${{ needs.resolve-version.outputs.date }}
         run: |
-          tags="$VERSION"
-          if [ "$IS_LATEST" = "true" ]; then
-            tags="$tags latest"
+          # sha7 and date tags are for continuous builds only; semver
+          # releases get just their version (plus latest when highest)
+          if [ "$VERSION" = "continuous" ]; then
+            tags="continuous ${REVISION::7} $DATE"
+          else
+            tags="$VERSION"
+            if [ "$IS_LATEST" = "true" ]; then
+              tags="$tags latest"
+            fi
           fi
           echo "list=$tags" >> $GITHUB_OUTPUT
 
       - name: Create manifest
         env:
           TAGS: ${{ steps.tags.outputs.list }}
+          REVISION: ${{ needs.resolve-version.outputs.revision }}
         run: |
+          annotations=()
+          if [ -n "$REVISION" ]; then
+            annotations=(--annotation "index:org.opencontainers.image.revision=$REVISION")
+          fi
           for tag in $TAGS; do
             docker buildx imagetools create \
+              "${annotations[@]}" \
               --tag ghcr.io/its-me/$REPOSITORY:$tag \
               $(printf "ghcr.io/its-me/$REPOSITORY@sha256:%s " $(ls /tmp/digests))
           done
