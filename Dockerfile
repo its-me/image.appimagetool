@@ -2,6 +2,8 @@ FROM alpine:latest
 
 ARG APPIMAGETOOL_VERSION=continuous
 ARG APPIMAGETOOL_SHA256
+ARG TARGETARCH
+ARG TARGETVARIANT
 
 RUN set -o xtrace \
     && apk update \
@@ -9,12 +11,12 @@ RUN set -o xtrace \
     && rm -rf /var/cache/apk/*
 
 RUN set -o xtrace \
-    && ARCH=$(uname -m) \
+    && ARCH="${TARGETARCH}${TARGETVARIANT:+/$TARGETVARIANT}" \
     && case $ARCH in \
-        x86_64) APPIMAGETOOL_ARCH=x86_64 ;; \
-        aarch64) APPIMAGETOOL_ARCH=aarch64 ;; \
-        armv7l) APPIMAGETOOL_ARCH=armhf ;; \
-        i686) APPIMAGETOOL_ARCH=i686 ;; \
+        amd64) APPIMAGETOOL_ARCH=x86_64 ;; \
+        arm64|arm64/v8) APPIMAGETOOL_ARCH=aarch64 ;; \
+        arm/v7) APPIMAGETOOL_ARCH=armhf ;; \
+        386) APPIMAGETOOL_ARCH=i686 ;; \
         *) echo "Unsupported architecture: $ARCH" && exit 1 ;; \
     esac \
     && wget -O /usr/local/bin/appimagetool "https://github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-${APPIMAGETOOL_ARCH}.AppImage" \
